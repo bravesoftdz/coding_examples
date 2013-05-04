@@ -1,0 +1,385 @@
+
+  Socket Programming
+
+
+    Writing networked code
+
+In order to write networked code in C, it's important to include the
+right headers (and libraries, at compile time). On *nix machines, the
+following inclusions should be made in your source code:
+
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+
+If you're compiling on a Solaris machine, you have to make sure to tell
+gcc to include the right libraries by adding "-lnsl -lsocket" to its
+command-line arguments when compiling.
+
+
+    Sockets
+
+Sockets are avenues of communication for a process. There are two basic
+types of sockets used in most networked code: Stream sockets (TCP) and
+Datagram sockets (UDP). We'll mostly worry about stream sockets for now.
+Sockets are, from the point of view of the programmer (and the OS), just
+another file descriptor. We can get a new socket via the socket() call:
+
+int socket(int domain, int type, int protocol)
+
+This integer returned by this call is our socket. If a socket cannot be
+created, -1 is returned and errno is set.
+
+The domain argument specifies what type of socket we'd like; for
+communicating via TCP (or UDP), we always want to use PF_INET. There are
+other types, e.g., PF_UNIX which can be used for interprocess
+communication.
+
+The type argument specifies whether we want a stream, datagram, or other
+style of socket. For stream sockets we can use the constant SOCK_STREAM;
+datagram sockets use SOCK_DGRAM.
+
+The protocol argument specifies which protocol we would like to use when
+communicating via the socket. For TCP, specify IPPROTO_TCP; for UDP, use
+IPPROTO_UDP.
+
+Since sockets are file descriptors, programs should use close() to free
+the socket resources when done using the socket.
+
+When a TCP socket is opened with socket(), the operating system
+allocates some resources for that socket. TCP sockets have several
+states, including one called TIME_WAIT which is used when the socket is
+closed. Since TCP sockets are used for a stateful protocol, they cannot
+be immediately closed and deallocated when, for example, their host
+process terminates unexpectedly. Thus, there is a phase at the end of
+the socket's life cycle when it is put in a waiting state prior to its
+final closure. During application development, where a socket may be
+bound to a specific port, this can be annoying, as attempts to re-run a
+program which binds to a specific port will fail if the socket from the
+previous invocation is still in TIME_WAIT; an address already in use
+error is generated. In order to avoid this, one may make a socket
+reusable, thereby avoiding the wait. To do this, we use setsockopt():
+
+int setsockopt(int sockfd, int level, int optname, const void * optval,
+int optlen)
+
+This call returns -1 on error and sets errno.
+
+
+    Data structures
+
+There are several data structures used with various network calls. The
+first is the simple sockaddr, which specifies the address data for a
+protocol:
+
+struct sockaddr {
+  unsigned short sa_family; //PF_xxxx
+  char sa_data[14]; //protocol address
+}
+
+For IPv4 address, you can use the sockaddr_in structure for convenience;
+it casts properly to a sockaddr structure:
+
+struct sockaddr_in {
+  short sin_family; //PF_xxxx
+  unsigned short sin_port; //port number
+  struct in_addr sin_addr; //ip address
+  unsigned char sin_zero[8]; //padding
+}
+
+You may be wondering what struct in_addr is:
+
+struct in_addr {
+  unsigned long saddr; //ip address as 4 bytes, in network byte order
+};
+
+You can convert an IP address (as a string, in dotted decimal format) to
+and from this data structure using inet_addr and inet_ntoa, respectively:
+
+struct in_addr inet_addr(char * dotdec)
+char * inet_ntoa(const struct in_addr in)
+
+
+    Client
+
+We'll first discuss the calls needed to build a simple client like
+Telnet. These clients connect to a known port on a remote server and
+exchange data over the connection. First, we need to connect() to a server:
+
+int connect(int sockfd, struct sockaddr * addr, int addrlen)
+
+This call requires a socket from socket(), an address to connect to (in
+our case, this is really a struct sockaddr_in that has been cast). It
+returns -1 on error and sets errno.
+
+Once we're connected, we can send and receive bytes:
+
+int send(int sockfd, const void * msg, int len, int flags)
+int recv(int sockfd, void * buf, int len, int flags)
+
+In both cases, sockfd must be a connected socket, and flags should
+simply be set to 0.
+
+In the case of send(), an attempt is made to send len bytes from the
+message; the value returned by send() is the number of bytes actually
+sent. It may be less than the requested amount.
+
+In the case of recv(), up to len waiting bytes are placed the msg
+buffer, and the actual number of bytes retrieved is returned. The recv()
+call blocks until at least 1 byte is read; if at least one byte is
+available when called, it returns all available bytes up to the limit
+len (i.e., it does not block until len bytes are available).
+
+
+    Server
+
+Server side code operates a bit differently than client side code;
+servers usually listen to a socket bound to a well-known port for
+clients to connect, and then process the client communication. When a
+client connects, a new socket is created and used as the endpoint for
+that client's communication, so that the server can process multiple
+client connections simultaneously (this requires multithreading or
+forking, which are outside the scope of this document). For a server,
+once we've created a socket, we need to first bind it to one or more of
+the IP addresses assigned to the machine, and listen on a specific port:
+
+int bind(int sockfd, struct sockaddr * myaddr, int addrlen)
+
+The struct sockaddr must specify the family, the port you want to bind
+to, and the address. The address can be set to INADDR_ANY to listen on
+all addresses. On error, -1 is returned and errno is set.
+
+Once the socket is bound, call listen() to start listening for incoming
+connections:
+
+int listen(int sockfd, int backlog)
+
+The backlog argument indicates how many connections can queue waiting to
+be dealt with at once. On error, -1 is returned and errno is set.
+
+To accept a connection, use accept():
+
+int accept(int sockfd, struct sockaddr * addr, int addrlen)
+
+The value returned by accept() is the (new) socket for the incoming
+connection, or -1 on error (errno is set). The addr argument is a
+pointer to a sockaddr structure which will be filled in with the new
+connection's address data. When addr is NULL, nothing is filled in.
+
+Once a connection is accepted, both send and recv can be used as above
+to converse with the remote host.
+
+
+    Mapping names to IP addresses
+
+Remember that the sockaddr_in structure wants the IP address of the
+remote host as a four bytes. If we are connecting to a specific IP
+address, we can use inet_addr to convert something like "141.213.74.25"
+to its four-byte representation. But what if we want to convert
+"blue.engin.umich.edu" to an IP address? For this, we need to use
+gethostbyname():
+
+struct hostent * gethostbyname(const char * name)
+
+This handy function uses DNS to look up name, which can be "google.com"
+or "141.213.74.25". The hostent structure looks like this:
+
+struct hostent {
+  char * h_name; //official name
+  char ** h_aliases; //alternate names
+  int h_addrtype; //address type returned (PF_INET, usually)
+  int h_length; //address length in bytes
+  char ** h_addr_list; //list of addresses
+}
+#define h_addr h_addr_list[0] //first address list, for compatibility
+
+The h_addr_list will contain IP addresses in the four-byte format when
+gethostbyname() is used on an internet host. In order to use the lookup
+services, you have to include the proper header:
+
+#include <netdb.h>
+
+NOTE: When compiling on Solaris machines, gcc must be given the
+"-lresolv" option in order to do lookups.
+
+
+    Simple Server
+
+This simple server listens on port 7500 for connections. When a
+connection is received, it asks the client how it is doing, and waits
+for a response (up to 80 characters). It prints out the response, closes
+the socket, and returns to waiting.
+
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <errno.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+
+#define LISTENPORT 7500
+
+#define BACKLOG 10
+
+#define MSG "Hello, how are you?"
+
+int main(int argc, char * argv[]) {
+  int sock, conn;
+  struct sockaddr_in my_addr, client_addr;
+  int sockopt_on = 1;
+  int sa_in_size = sizeof(struct sockaddr_in);
+  char response[80];
+
+  //get a socket
+  if ((sock = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP)) == -1) {
+    perror("socket");
+    exit(1);
+  }
+
+  //make it reusable
+  if (setsockopt(sock,SOL_SOCKET,SO_REUSEADDR,&sockopt_on,sizeof(int)) == -1) {
+    perror("setsockopt");
+    exit(1);
+  }
+
+  //first zero the struct
+  memset((char *) &my_addr, 0, sa_in_size);
+
+  //now fill in the fields we need
+  my_addr.sin_family = PF_INET;
+  my_addr.sin_port = htons(LISTENPORT);
+  my_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+
+  //bind our socket to the port
+  if (bind(sock,(struct sockaddr *)&my_addr, sa_in_size) == -1) {
+    perror("bind");
+    exit(1);
+  }
+
+  //start listening for incoming connections
+  if (listen(sock,BACKLOG) == -1) {
+    perror("listen");
+    exit(1);
+  }
+
+  while(1) {
+    //grab connections
+    conn = accept(sock, (struct sockaddr *)&client_addr, &sa_in_size);
+    if (conn == -1) {
+      perror("accept");
+      exit(1);
+    }
+
+    //log the connecter
+    printf("got connection from %s\n", inet_ntoa(client_addr.sin_addr));
+
+    //send a greeting
+    if (send(conn,MSG,strlen(MSG)+1,0) == -1) {
+      perror("send");
+    }
+
+    //get the reply
+    if (recv(conn, &response, 80, 0) == -1) {
+      perror("recv");
+    }
+    printf("The client says \"%s\"\n",&response);
+    close(conn);
+
+  }
+
+  return 0;
+}
+
+
+    Simple Client
+
+This client connects to the above server, receives the query, and sends
+the response.
+
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <errno.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <netdb.h>
+
+#define PORT 7500
+
+#define BUFLEN 100
+
+#define MSG "Well, thanks for asking."
+
+int main(int argc, char * argv[]) {
+  int sock;
+  char buf[BUFLEN];
+  struct hostent * he;
+  struct sockaddr_in server_addr;
+  int bytecount;
+
+  if (argc != 2) {
+    fprintf(stderr,"usage: %s [hostname]\n", argv[0]);
+    exit(1);
+  }
+
+  //look up the host
+  he = gethostbyname(argv[1]);
+  if (he == NULL) {
+    perror("gethostbyname");
+    exit(1);
+  }
+
+  //get a socket
+  if ((sock = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP)) == -1) {
+    perror("socket");
+    exit(1);
+  }  
+  
+  //set the fields for the server address struct
+  memset((char *) &server_addr, 0, sizeof(struct sockaddr_in));
+  server_addr.sin_family = PF_INET;
+  server_addr.sin_port = htons(PORT);
+  server_addr.sin_addr = *((struct in_addr *)he->h_addr);
+
+  //connect to the server
+  if (connect(sock, (struct sockaddr *) &server_addr,
+                     sizeof(struct sockaddr_in)) == -1) {
+    perror("connect");
+    exit(1);
+  }
+
+  //receive the greeting
+  bytecount = recv(sock,buf,BUFLEN-1, 0);
+  if (bytecount == -1) {
+    perror("recv");
+    exit(1);
+  }
+
+  buf[bytecount] = '\0';
+  printf("Server says: \"%s\"\n",buf);
+
+  //send the reply
+  if (send(sock,MSG,strlen(MSG)+1,0) == -1) {
+    perror("send");
+    exit(1);
+  }
+
+  close(sock);
+  return 0;
+}
+
+
+    Need more info?
+
+The easiest place to get more, specific information about socket
+programming is via the many man pages available on the subject.
+Additionally, the UNIX Networking Programming book (an optional
+textbook) is a good resource. Also, googling something like "socket
+programming tutorial" will direct you to some well-written guides. You
+can always ask us for help, too.
+------------------------------------------------------------------------
+Matt England (moenglan@eecs.umich.edu)

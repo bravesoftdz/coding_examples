@@ -21,7 +21,9 @@ remove_dup(my_link_t *head) {
         while (temp != curr) {
             if (temp->data == curr->data) {
                 prev->next = curr->next;
+                my_link_t *temp = curr;
                 curr = curr->next;
+                free(temp);
                 break;
             }
             else {
